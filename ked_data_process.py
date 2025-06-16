@@ -3,24 +3,26 @@
 # user:User
 # Author: tyy
 # createtime: 2024-01-29 15:26
-
+import os
+import wfdb
 import json
 import requests
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer
 import pickle
 import psycopg2
-conn = psycopg2.connect(host="10.193.180.219",
-                        database="postgres",
+
+conn = psycopg2.connect(host="10.193.191.222",
+                        database="mimic-iv",
                         user="postgres",
-                        password="joker",
+                        password="123456",
                         port="5432")
 
 """
 Refer to this project： https://github.com/MIT-LCP/mimic-code to construct the mimic-iv database 
 """
 
-def generate_ked_label(): #用于生成心电图报告的标签数据，并将其划分为训练集、验证集和测试集。
+def generate_ked_label():
     # annotated_data = pd.read_excel('mimicivecg_labeling_final_anno.xlsx', sheet_name='mimicecg_label_round2')
     # annotated_data = annotated_data[['subperClass', 'label', 'count', 'final']]
     # annotated_dict = annotated_data.set_index('label')['final'].to_dict()
@@ -35,29 +37,28 @@ def generate_ked_label(): #用于生成心电图报告的标签数据，并将�
     # print(len(total_label_set))  # 345
     # new_df = pd.DataFrame({"total_label": list(total_label_set)})
     # new_df.to_csv("./new_process_01_29/total_label_set.csv")
-    #表中查询心电图报告数据，
     query_1 = """SELECT subject_id,study_id,report_0,report_1,report_2,report_3,report_4,
                          report_5,report_6,report_7, report_8, report_9,report_10,
                          report_11,report_12,report_13, report_14, report_15,report_16,
-                         report_17 FROM mimiciv_ecg.machine_measurements"""
+                         report_17 FROM machine_measurements"""
     # load the tables into dataframes
     df_1 = pd.read_sql(query_1, conn)
-    #合并报告列
+    
     def combine_reports(row):
         reports = [str(elem) for elem in row if elem]  # 确保空值被忽略
         return ', '.join(reports)
+
     report_cols = [col for col in df_1.columns if 'report_' in col]
     df_1['report'] = df_1[report_cols].apply(combine_reports, axis=1)
-    #调整列类型
     df_1['study_id'] = df_1['study_id'].astype(str)
     df_1['subject_id'] = df_1['subject_id'].astype(str)
     df_1 = df_1[['subject_id', "study_id", "report"]]
-    #加载标签数据
+    #print(df_1.head(10))
     label_data = pd.read_json(
-        "/data_C/sdb1/lyi/ECGFM-KED-main/dataset/mimiciv/mimiciv_ecg_label_annotated_11_9.json")
+        "/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/mimiciv/mimiciv_ecg_label_annotated_11_9.json")
     label_data['study_id'] = label_data['study_id'].astype(str)
     label_data['subject_id'] = label_data['subject_id'].astype(str)
-    #统计标签频率
+
     label_set_count = {}
     for idx, item in label_data.iterrows():
         for label in item['labels']:
@@ -66,99 +67,212 @@ def generate_ked_label(): #用于生成心电图报告的标签数据，并将�
             else:
                 label_set_count[label] += 1
     label_set_count = {k: v for k, v in sorted(label_set_count.items(), key=lambda item: item[1], reverse=True)}
-    #过滤低频标签
     sorted_filter_dict = {key: value / label_data.shape[0] for key, value in label_set_count.items() if value >= 2000}
     label_data['filter_labels'] = label_data['labels'].apply(lambda x: [i for i in x if i in sorted_filter_dict.keys()])
     label_data = label_data[label_data['filter_labels'].map(lambda d: len(d)) > 0]
-
-    # label_data = label_data.set_index('study_id')
-    print(label_data.shape)
-    #合并报告和标签数据
+    
+    label_data = label_data.set_index('study_id')
+    #print(label_data.shape)
+    ##合并报告和标签数据
     label_data = pd.merge(label_data, df_1, on=['subject_id', 'study_id'], how='inner')
-    print(label_data.shape)
-    print(label_data['study_id'].nunique())
-    print(label_data['subject_id'].nunique())
-    #多标签二值化编码
-    mlb = MultiLabelBinarizer()
-    mlb.fit(label_data.filter_labels.values)
-    y = mlb.transform(label_data.filter_labels.values)
-    print(y.shape)
+    # print(label_data.shape)
+    # print(label_data['study_id'].nunique())
+    # print(label_data['subject_id'].nunique())
+
+    #在报告后加入波形特征
+    #带有波形信息的csv
+    mm_df = pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/mimiciv/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/new_record_list.csv', dtype=str)
+    for idx, item in label_data.iterrows():
+        subject_id = item['subject_id']
+        study_id = item['study_id']
+        wave_data = find_wave_features(subject_id, study_id, mm_df)
+    if wave_data is not None:
+        wave_desc = get_wave_info(wave_data)
+        label_data.at[idx, 'report'] = item['report'].rstrip('.') + "." + wave_desc
+    print(label_data['report'][:10])
+    
+
+    y = label_data.filter_labels.values #标签列
+
     #将患者 ID 划分为训练集、验证集和测试集。
     total_patient_id = list(set(label_data['subject_id'].values.tolist()))
     patient_id_list_train = total_patient_id[:int(len(total_patient_id) * 0.9)]
     patient_id_list_val = total_patient_id[int(len(total_patient_id) * 0.9):int(len(total_patient_id) * 0.95)]
     patient_id_list_test = total_patient_id[int(len(total_patient_id) * 0.95):]
     #保存划分结果
-    with open("patient_id_list_01_29.json", "w") as f:
+    with open("patient_id_list_06_16.json", "w") as f:
         json.dump({"train_list": patient_id_list_train, "val_list": patient_id_list_val,
                    "test_list": patient_id_list_test}, f)
-    #根据患者 ID 划分训练集、验证集和测试集。
-    data_y_total_train = label_data[label_data['subject_id'].isin(patient_id_list_train)]
-    data_y_total_val = label_data[label_data['subject_id'].isin(patient_id_list_val)]
-    data_y_total_test = label_data[label_data['subject_id'].isin(patient_id_list_test)]
-    #患者 ID 划分标签数据。
+
+    #患者 ID 划分训练集、验证集和测试集的标签数据。
     y_train = y[label_data['subject_id'].isin(patient_id_list_train)]
     y_val = y[label_data['subject_id'].isin(patient_id_list_val)]
     y_test = y[label_data['subject_id'].isin(patient_id_list_test)]
-    print(data_y_total_train.shape)
-    print(data_y_total_val.shape)
-    print(data_y_total_test.shape)
-    print(y_train.shape)
-    print(y_val.shape)
-    print(y_test.shape)
-    print()
-    #二值化编码后的标签数据保存到 .npy 文件中
-    y_train.dump('y_train_one_hot_data.npy')
-    y_val.dump('y_val_one_hot_data.npy')
-    y_test.dump('y_test_one_hot_data.npy')
-    #划分后的数据集保存到 JSON 文件中。
-    data_y_total_train.to_json('data_y_total_train.json', orient='records')
-    data_y_total_val.to_json('data_y_total_val.json', orient='records')
-    data_y_total_test.to_json('data_y_total_test.json', orient='records')
 
-    with open('mlb.pkl', 'wb') as tokenizer:
-        pickle.dump(mlb, tokenizer)
+    # print(data_y_total_train.shape)
+    # print(data_y_total_val.shape)
+    # print(data_y_total_test.shape)
+    # print(y_train.shape)
+    # print(y_val.shape)
+    # print(y_test.shape)
+    # print(y_test[:10])
+
+    #将原生标签数据保存到 .npy 文件中
+    np.save('y_train_raw.npy', y_train, allow_pickle=True)
+    np.save('y_val_raw.npy', y_val, allow_pickle=True)
+    np.save('y_test_raw.npy', y_test, allow_pickle=True)
+
+    # 分别根据患者ID划分训练集、验证集和测试集的report
+    report_train = label_data[label_data['subject_id'].isin(patient_id_list_train)]['report']
+    report_val = label_data[label_data['subject_id'].isin(patient_id_list_val)]['report']
+    report_test = label_data[label_data['subject_id'].isin(patient_id_list_test)]['report']
+    
+    #保存到文件
+    report_train.to_csv("report_train.csv", index=False)
+    report_val.to_csv("report_val.csv", index=False)
+    report_test.to_csv("report_test.csv", index=False)
+
+    # 分别根据患者ID划分训练集、验证集和测试集的ecg信号
+    # 按照患者ID划分ECG信号路径
+    path_train = label_data[label_data['subject_id'].isin(patient_id_list_train)]['path']
+    path_val = label_data[label_data['subject_id'].isin(patient_id_list_val)]['path']
+    path_test = label_data[label_data['subject_id'].isin(patient_id_list_test)]['path']
+    #根目录
+    vis_root = '/home/user/dataSpace/mimic_iv_ecg/mimic-iv-ecg-diagnostic-electrocardiogram-matched-subset-1.0/'
+
+    # 训练测试验证集的原始ECG信号进行了通道交换
+    ecg_signal_train = load_and_swap(path_train, vis_root)
+    ecg_signal_val = load_and_swap(path_val, vis_root)
+    ecg_signal_test = load_and_swap(path_test, vis_root)
+    print(ecg_signal_test[0].shape)  # 打印一条信号的shape      
+
+   
+
+    #对信号独立z-score归一化
+    ecg_signal_train_norm = zscore_norm(ecg_signal_train[0])
+    ecg_signal_val_norm = zscore_norm(ecg_signal_val[0])
+    ecg_signal_test_norm = zscore_norm(ecg_signal_test[0])
+
+    # 保存为独立的 .npy 文件
+    np.save('ecg_signal_train_norm.npy', ecg_signal_train_norm)
+    np.save('ecg_signal_val_norm.npy', ecg_signal_val_norm)
+    np.save('ecg_signal_test_norm.npy', ecg_signal_test_norm)
 
 
-def generate_label_description(): #用于生成标签的描述文本。
+
+"""2025年6月16日"""
+def get_wave_info(data):
+    keys = ['RR_Interval', 'PR_Interval', 'QRS_Complex', 'QT_Interval',
+            'QTc_Interval', 'P_Wave_Peak', 'R_Wave_Peak', 'T_Wave_Peak']
+    text_describe = ""
+    text_describe += f" RR: {data['RR_Interval']}"
+    text_describe += f" PR: {data['PR_Interval']}"
+    text_describe += f" QRS: {data['QRS_Complex']}"
+    text_describe += f" QT/QTc: {data['QT_Interval']}/{data['QTc_Interval']}"
+    text_describe += f" P/R/T Wave: {data['P_Wave_Peak']}/{data['R_Wave_Peak']}/{data['T_Wave_Peak']}"
+    return text_describe
+
+def find_wave_features(subject_id, study_id, mm_df):
+    """
+    根据subject_id和study_id查找machine_measurements.csv中对应的那一行的波形特征。
+    """
+    row = mm_df[(mm_df['subject_id'] == str(subject_id)) & (mm_df['study_id'] == str(study_id))]
+    if row.empty:
+        return None
+    row = row.iloc[0]
+    # 你需要根据你的csv实际字段名调整键名
+    data = {
+        'RR_Interval': row.get('RR_Interval', 'NA'),
+        'PR_Interval': row.get('PR_Interval', 'NA'),
+        'QRS_Complex': row.get('QRS_Complex', 'NA'),
+        'QT_Interval': row.get('QT_Interval', 'NA'),
+        'QTc_Interval': row.get('QTc_Interval', 'NA'),
+        'P_Wave_Peak': row.get('P_Wave_Peak', 'NA'),
+        'R_Wave_Peak': row.get('R_Wave_Peak', 'NA'),
+        'T_Wave_Peak': row.get('T_Wave_Peak', 'NA'),
+    }
+    return data
+
+
+
+# 对信号进行归一化处理
+def zscore_norm(ecg_signal):
+    # (channels, timesteps)
+    mean = np.mean(ecg_signal, axis=1, keepdims=True)
+    std = np.std(ecg_signal, axis=1, keepdims=True)
+    ecg_norm=(ecg_signal - mean) / (std + 1e-8)
+    return ecg_norm
+
+
+
+def swap_avl_avf(signal, sig_names):
+    """
+    交换aVL和aVF通道（如果都存在）
+    """
+    if 'aVL' in sig_names and 'aVF' in sig_names:
+        avl_idx = sig_names.index('aVL')
+        avf_idx = sig_names.index('aVF')
+        swapped_signal = signal.copy()
+        swapped_signal[:, [avl_idx, avf_idx]] = swapped_signal[:, [avf_idx, avl_idx]]
+        return swapped_signal
+    else:
+        # 如果缺少aVL或aVF，直接返回原信号
+        return signal
+
+def load_and_swap(path_list, vis_root):
+    """
+    批量读取并交换aVL/aVF通道
+    返回：所有信号的list
+    """
+    signals = []
+    for path in path_list:
+        record = wfdb.rdrecord(os.path.join(vis_root, path))
+        signal = record.p_signal
+        sig_names = record.sig_name
+        signal_swapped = swap_avl_avf(signal, sig_names)
+        signals.append(signal_swapped)
+    return signals
+
+
+
+
+
+
+
+
+def generate_label_description():
     """"""
-    #读取标签数据 过滤掉不需要的标签
     label_set_df = pd.read_csv('total_label_set.csv')
     label_set_df = label_set_df[~label_set_df['total_label'].isin(['delete', 'delete_all'])]
-    #提取标签列表
     total_label_list = label_set_df['total_label'].values.tolist()
-    #读取描述文本 
     with open('descript.txt', 'r') as file:
         list_output = file.readlines()
     description = [line.strip() for line in list_output]
     generated_description_dict = {}
-    # 将描述文本与对应的标签名称关联，并存储到 generated_description_dict 字典中。
-    for idx, item in enumerate(description): 
+    for idx, item in enumerate(description):
         generated_description_dict[total_label_list[idx]] = item
-    #处理缺失描述 如果标签没有对应的描述文本，则调用 _handler_generate_augment_() 方法生成描述文本。
+
     for item in total_label_list:
         if item in generated_description_dict.keys():
             continue
         generated_description_dict[item] = _handler_generate_augment_(item)
-    #保存描述文本
+
     with open("mimiciv_label_map_report.json", "w") as f:
         json.dump(generated_description_dict, f)
 
 
-def _handler_generate_augment_(item, prompt_prefix=None, prompt_suffix=None):#用于生成单个标签的描述文本。
-    #定义生成描述的前缀提示，要求模型扮演专业心电图医生的角色。
+def _handler_generate_augment_(item, prompt_prefix=None, prompt_suffix=None):
+
     if prompt_prefix:
         prompt_prefix_diagnosis = prompt_prefix
     else:
         prompt_prefix_diagnosis = "I want you to play the role of a professional Electrocardiologist, and I need you to teach me how " \
                                   "to diagnose "
-    #定义生成描述的后缀提示，要求模型生成少于 50 个单词的回答。
     if prompt_suffix:
         prompt_suffix_diagnosis = prompt_suffix
     else:
         prompt_suffix_diagnosis = " from 12-lead ECG. such as what leads or what features to focus on ,etc. Your answer must be less " \
                                   "than 50 words."
-    #向 GPT API 发送 POST 请求，并获取响应。
     url = "CHAT_WITH_YOUR_GPT"
     headers = {"Content-Type": "application/json;charset=utf-8",
                "Accept": "*/*",
@@ -171,6 +285,7 @@ def _handler_generate_augment_(item, prompt_prefix=None, prompt_suffix=None):#�
     json_response = response.json()
     print(json_response["content"])
     return json_response["content"]
+
 
 
 """2024年2月27日"""
@@ -237,55 +352,44 @@ def refine_zhipu_augment():
     with open("mimiciv_label_map_report_zhipuai_new.json", "w") as f:
         json.dump(new_description_dict, f)
 
-def generate_gemini_augment(): #通过调用 Gemini API（假设是一个生成文本的 API），为每个标签生成描述文本，并将结果保存到 JSON 文件中
-    #读取标签数据 过滤掉不需要的标签
+def generate_gemini_augment():
     label_set_df = pd.read_csv('total_label_set.csv')
     label_set_df = label_set_df[~label_set_df['total_label'].isin(['delete', 'delete_all'])]
     total_label_list = label_set_df['total_label'].values.tolist()
-    #用于存储每个标签及其对应的生成描述。
     generated_description_dict = {}
-    #遍历标签并生成描述
+
     for item in total_label_list:
         response = _generate_gemini_augment_(item)
         print(response)
         generated_description_dict[item] = response
-    #保存到 mimiciv_label_map_report_gemini.json 文件中
+
     with open("mimiciv_label_map_report_gemini.json", "w") as f:
         json.dump(generated_description_dict, f)
 
-def _generate_gemini_augment_(item): #用于生成标签的描述文本。
-    #定义生成描述的前缀提示，要求模型扮演专业心电图医生的角色，并指导如何诊断某个标签。
+def _generate_gemini_augment_(item):
     prompt_prefix_diagnosis = "I want you to play the role of a professional Electrocardiologist, and I need you to teach me how " \
                               "to diagnose "
-    #定义生成描述的后缀提示，要求模型基于 12 导联心电图生成诊断描述，并限制回答长度在 50 个单词以内。
     prompt_suffix_diagnosis = " from 12-lead ECG. such as what leads or what features to focus on ,etc. Your answer must be less " \
                                   "than 50 words."
-    #定义 API URL
     url = "YOUR_GEMINI_API"
-    #定义请求头
     headers = {"Content-Type": "application/json;charset=utf-8",
                "Accept": "*/*",
                "Accept-Encoding": "gzip, deflate, br",
                "Connection": "keep-alive"}
-    #构造请求数据
     data = {"messages": prompt_prefix_diagnosis + item + prompt_suffix_diagnosis,
             "userId": "serveForPaper"}
-    #将请求数据转换为 JSON 格式
     json_data = json.dumps(data)
-    #发送 POST 请求
     response = requests.post(url=url, data=json_data, headers=headers)
-    #返回生成的描述文本
     return response.text
 
 # 2024年9月6日
-def generate_age_sex(): #从数据库中提取与心电图（ECG）相关的患者信息，包括年龄、性别、住院时间等，并进行一些基本的统计分析。
+def generate_age_sex():
     """"""
-    #查询心电图报告数据
     query_1 = """SELECT subject_id,study_id,report_0,report_1,report_2,report_3,report_4,
                          report_5,report_6,report_7, report_8, report_9,report_10,
                          report_11,report_12,report_13, report_14, report_15,report_16,
                          report_17 FROM mimiciv_ecg.machine_measurements"""
-    #查询心电图记录的时间、路径
+
     query_2 = """SELECT subject_id, study_id, ecg_time, path FROM mimiciv_ecg.record_list"""
 
     # load the tables into dataframes
@@ -295,7 +399,7 @@ def generate_age_sex(): #从数据库中提取与心电图（ECG）相关的患�
 
     # merge the dataframes on the columns ['subject_id', 'study_id']
     merged_df = pd.merge(df_1, df_2, on=['subject_id', 'study_id'])
-    #查询患者的住院信息
+
     query_3 = """SELECT subject_id,admittime, dischtime,age,gender, hospital_mortality, one_year_mortality FROM mimiciv_derived.hosp_demographics_new"""
 
     # 读取第一个表的数据
@@ -305,10 +409,9 @@ def generate_age_sex(): #从数据库中提取与心电图（ECG）相关的患�
     df3['admittime'] = pd.to_datetime(df3['admittime'])
     df3['dischtime'] = pd.to_datetime(df3['dischtime'])
     df3['subject_id'] = df3['subject_id'].astype(str)
-    #三个查询结果合并
+
     final_merged_df = pd.merge(merged_df, df3, on='subject_id')
     print(final_merged_df.shape)
-    #过滤数据，只保留心电图记录时间（ecg_time）在入院时间（admittime）和出院时间（dischtime）之间的记录。
     cond = (final_merged_df['ecg_time'] >= final_merged_df['admittime']) & (final_merged_df['ecg_time'] <= final_merged_df['dischtime'])
     final_merged_df = final_merged_df[cond]
     print(final_merged_df['study_id'].nunique())
@@ -337,11 +440,12 @@ def generate_age_sex(): #从数据库中提取与心电图（ECG）相关的患�
     print(final_merged_df)
 
 if __name__ == '__main__':
-    #generate_age_sex()
-    #generate_gemini_augment()
+    # generate_age_sex()
+    # generate_gemini_augment()
 
-    #generate_zhipuai_augment() 
-    #refine_zhipu_augment() #对已生成的描述文本进行进一步处理，确保描述文本中没有中文内容。
+    # refine_zhipu_augment()
+
+    # generate_zhipuai_augment()
 
     generate_ked_label()
-    #generate_label_description()
+    # generate_label_description()
