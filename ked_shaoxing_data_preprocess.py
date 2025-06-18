@@ -24,10 +24,13 @@ def handler_data():
             ecg_norm=(ecg_signal - mean) / (std + 1e-8)
             return ecg_norm
 
-    row_data_file = pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/diagnostics.csv')
+    row_data_file = pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/new_diagnostics.csv')
     print(row_data_file.shape)
     print(row_data_file.head())
 
+    # 读取SNOMED映射表，建立映射字典
+    map_df = pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/CSD/ConditionNames_SNOMED-CT.csv')
+    snomed_map = dict(zip(map_df['Snomed_CT'].astype(str), map_df['Full Name']))
    
     # 先将所有的signal读取出来
     signal_data = []
@@ -70,8 +73,40 @@ def handler_data():
 
     # 只保留有有效标签的样本
     sig = signal_data[row_data_file['Rhythm_len'] > 0]
-    raw_label = row_data_file['Snomed_CT'][row_data_file['Rhythm_len'] > 0]
-    report = row_data_file['report'][row_data_file['Rhythm_len'] > 0]
+    data_file = row_data_file[row_data_file['Rhythm_len'] > 0]
+    
+
+    #加入波形特征
+    # 定义波形特征描述函数
+    def get_wave_info(data):
+        text_describe = ""
+        text_describe += f" RR: {data['RR_Interval']}"
+        text_describe += f" PR: {data['PR_Interval']}"
+        text_describe += f" QRS: {data['QRS_Complex']}"
+        text_describe += f" QT/QTc: {data['QT_Interval']}/{data['QTc_Interval']}"
+        text_describe += f" P/R/T Wave: {data['P_Wave_Peak']}/{data['R_Wave_Peak']}/{data['T_Wave_Peak']}"
+        return text_describe
+
+    # 新建 report_wave 列，拼接报告和波形特征
+    def append_wave_to_report(row):
+        return str(row['report']) + get_wave_info(row)
+
+    data_file['report_wave'] = data_file.apply(append_wave_to_report, axis=1)
+    
+    #得标签与报告
+    raw_label= data_file['Rhythm']
+    report = data_file['report_wave']
+  
+    # Snomed_CT批量映射为多标签全称
+    def snomed_to_names(snomed_str):
+        codes = [s.strip() for s in str(snomed_str).split(',') if s.strip()]
+        names = [snomed_map.get(code, code) for code in codes]
+        return names
+    
+    label= raw_label.apply(snomed_to_names)
+
+    #
+
 
    
 
