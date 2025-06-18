@@ -60,20 +60,25 @@ def handler_data():
         signal_data = np.delete(signal_data, error_index, axis=0)
         row_data_file = row_data_file.drop(error_index).reset_index(drop=True)
 
-    # 3. 处理标签（假设 Rhythm 字段为主标签，若为 report/Snomed_CT/strat_diag 请相应修改）
-    # 多标签分割（如有多个标签用逗号/分号分隔）
-    row_data_file['Rhythm'] = row_data_file['Rhythm'].apply(lambda x: [s.strip() for s in str(x).split(';') if s.strip()])
+    # 用Snomed_CT做多标签处理
+    # 多标签分割
+    row_data_file['Snomed_CT_list'] = row_data_file['Snomed_CT'].apply(
+        lambda x: [s.strip() for s in str(x).split(',') if s.strip()]
+    )
     # 可根据实际标签分隔符调整
 
     # 统计标签分布，过滤少见标签
-    counts = pd.Series([l for sub in row_data_file['Rhythm'] for l in sub]).value_counts()
+    counts = pd.Series([l for sub in row_data_file['Snomed_CT_list'] for l in sub]).value_counts()
     valid_labels = counts[counts > 100].index  # 只保留样本数大于100的标签
-    row_data_file['Rhythm'] = row_data_file['Rhythm'].apply(lambda x: list(set(x).intersection(set(valid_labels))))
-    row_data_file['Rhythm_len'] = row_data_file['Rhythm'].apply(lambda x: len(x))
-
+    row_data_file['Snomed_CT_list'] = row_data_file['Snomed_CT_list'].apply(
+        lambda x: list(set(x).intersection(set(valid_labels)))
+    )
+    row_data_file['Label_len'] = row_data_file['Snomed_CT_list'].apply(lambda x: len(x))
+    
     # 只保留有有效标签的样本
-    sig = signal_data[row_data_file['Rhythm_len'] > 0]
-    data_file = row_data_file[row_data_file['Rhythm_len'] > 0]
+    mask = row_data_file['Label_len'] > 0
+    sig = signal_data[mask]
+    data_file = row_data_file[mask]
     
 
     #加入波形特征
@@ -94,18 +99,38 @@ def handler_data():
     data_file['report_wave'] = data_file.apply(append_wave_to_report, axis=1)
     
     #得标签与报告
-    raw_label= data_file['Rhythm']
+    raw_label= data_file['Snomed_CT_list']
     report = data_file['report_wave']
   
     # Snomed_CT批量映射为多标签全称
-    def snomed_to_names(snomed_str):
-        codes = [s.strip() for s in str(snomed_str).split(',') if s.strip()]
-        names = [snomed_map.get(code, code) for code in codes]
-        return names
+    def snomed_to_names(code_list):
+        return [snomed_map.get(code, code) for code in code_list]
     
     label= raw_label.apply(snomed_to_names)
 
-    #
+    # 按8:1:1随机划分训练、验证、测试集
+    # 保证sig, label, report顺序一致
+    X_temp, X_test, y_temp, y_test, report_temp, report_test = train_test_split(
+        sig, label, report, test_size=0.1, random_state=42, stratify=None
+    )
+    val_ratio = 0.1 / 0.9
+    X_train, X_val, y_train, y_val, report_train, report_val = train_test_split(
+        X_temp, y_temp, report_temp, test_size=val_ratio, random_state=42, stratify=None
+    )
+
+    # 保存
+    #信号
+    np.save(f'./data/signal_train.npy', X_train)
+    np.save(f'./data/signal_val.npy', X_val)
+    np.save(f'./data/signal_test.npy', X_test)
+    #标签
+    y_train.reset_index(drop=True).to_json(f'./data/label_train.json', orient="records", force_ascii=False)
+    y_val.reset_index(drop=True).to_json(f'./data/label_val.json', orient="records", force_ascii=False)
+    y_test.reset_index(drop=True).to_json(f'./data/label_test.json', orient="records", force_ascii=False)
+    #报告
+    report_train.reset_index(drop=True).to_csv(f'./data/report_train.csv', index=False)
+    report_val.reset_index(drop=True).to_csv(f'./data/report_val.csv', index=False)
+    report_test.reset_index(drop=True).to_csv(f'./data/report_test.csv', index=False)
 
 
    
