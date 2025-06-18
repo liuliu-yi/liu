@@ -15,58 +15,66 @@ def handler_data():
         please first download the raw data from https://doi.org/10.6084/m9.figshare.c.4560497.v2,
         and put it in data_path
         """
-    mlb = MultiLabelBinarizer()
     """"""
-    row_data_file = pd.read_excel('Diagnostics.xlsx')
+    #信号归一化
+    def zscore_norm(ecg_signal):
+            # (channels, timesteps)
+            mean = np.mean(ecg_signal, axis=1, keepdims=True)
+            std = np.std(ecg_signal, axis=1, keepdims=True)
+            ecg_norm=(ecg_signal - mean) / (std + 1e-8)
+            return ecg_norm
+
+    row_data_file = pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/diagnostics.csv')
     print(row_data_file.shape)
     print(row_data_file.head())
 
+   
     # 先将所有的signal读取出来
     signal_data = []
-    base_path = '/home/lzy/workspace/dataSet/shaoxing_hospital/ECGData/'
-    error_file = []
+    error_files = []
     error_index = []
+
     for idx, item in row_data_file.iterrows():
-        file_path = base_path + item['FileName'] + '.csv'
-        file_data = pd.read_csv(file_path)
-        return_result = _resample_signal(file_data.values)
-        if return_result.sum() == 0:
-            error_file.append(item['FileName'])
+        # 注意：filename 字段通常不带扩展名
+        base_path = '/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/CSD/'
+        file_path = base_path + item['filename']
+        # Example: WFDBRecords/01/010/JS00001
+        try:
+            record = wfdb.rdrecord(file_path)
+            sig = record.p_signal  # shape: (length, leads)
+            #信号自归一化
+            sig = zscore_norm(sig)
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            error_files.append(file_path)
             error_index.append(idx)
-        signal_data.append(return_result)
+            sig = np.zeros((5000, 12))  # 占位
+        signal_data.append(sig)
+
+    # 剔除无效信号
     signal_data = np.array(signal_data)
-    signal_data = np.delete(signal_data, error_index, axis=0)
-    # 处理label
-    row_data_file = row_data_file.drop(error_index)
-    counts = pd.Series(row_data_file.Rhythm.values).value_counts()
-    counts = counts[counts > 100]
-    row_data_file.Rhythm = row_data_file.Rhythm.apply(lambda x: list(set([x]).intersection(set(counts.index.values))))
-    row_data_file['Rhythm_len'] = row_data_file.Rhythm.apply(lambda x: len(x))
-    X = signal_data[row_data_file.Rhythm_len > 0]
-    Y = row_data_file[row_data_file.Rhythm_len > 0]
-    mlb.fit(Y.Rhythm.values)
-    y = mlb.transform(Y.Rhythm.values)
-    X = np.stack(X)
-    X.dump("signal_data.npy")
-    y.dump("label_data.npy")
-    # save LabelBinarizer
-    with open('mlb.pkl', 'wb') as tokenizer:
-        pickle.dump(mlb, tokenizer)
+    if error_index:
+        signal_data = np.delete(signal_data, error_index, axis=0)
+        row_data_file = row_data_file.drop(error_index).reset_index(drop=True)
 
-def _resample_signal(mat):
-    mat = resample(mat, int(mat.shape[0] / 5), axis=0)
-    mat = mat / 1000
-    mat1 = np.zeros((1000, 12))
-    if mat.shape[0] == 0:
-        return mat1
-    if mat.shape[0] < 1000:
-        start = (1000 - mat.shape[0]) // 2
-        mat1[start:start + mat.shape[0], :] = mat
-    else:
-        mat1 = mat[:1000, :]
-    return mat1
+    # 3. 处理标签（假设 Rhythm 字段为主标签，若为 report/Snomed_CT/strat_diag 请相应修改）
+    # 多标签分割（如有多个标签用逗号/分号分隔）
+    row_data_file['Rhythm'] = row_data_file['Rhythm'].apply(lambda x: [s.strip() for s in str(x).split(';') if s.strip()])
+    # 可根据实际标签分隔符调整
 
-import pickle
+    # 统计标签分布，过滤少见标签
+    counts = pd.Series([l for sub in row_data_file['Rhythm'] for l in sub]).value_counts()
+    valid_labels = counts[counts > 100].index  # 只保留样本数大于100的标签
+    row_data_file['Rhythm'] = row_data_file['Rhythm'].apply(lambda x: list(set(x).intersection(set(valid_labels))))
+    row_data_file['Rhythm_len'] = row_data_file['Rhythm'].apply(lambda x: len(x))
+
+    # 只保留有有效标签的样本
+    sig = signal_data[row_data_file['Rhythm_len'] > 0]
+    raw_label = row_data_file['Snomed_CT'][row_data_file['Rhythm_len'] > 0]
+    report = row_data_file['report'][row_data_file['Rhythm_len'] > 0]
+
+   
+
 if __name__ == '__main__':
     handler_data()
     # f = open('/home/tyy/unECG/dataset/shaoxing/mlb.pkl', 'rb')
