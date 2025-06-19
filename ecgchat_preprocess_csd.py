@@ -76,14 +76,22 @@ def prepare(args):
     print("Start extracting labels from .hea files...")
     for file_name in tqdm(file_list):
         full_path = os.path.join(f[0], file_name).replace(".mat", "")
-        record = wfdb.rdsamp(full_path)[1]
-        sn_code = record['comments'][2][4:].replace(',', ';')
-        report = " ".join(snomed_dict[code] for code in sn_code.split(';'))
-        codes.append(sn_code)
-        reports.append(report)
-        ages.append(record['comments'][0][5:])
-        sexes.append(record['comments'][1][5:])
-        paths.append(full_path.split(os.path.join(data_dir))[1])
+        try:
+            record = wfdb.rdsamp(full_path)[1]
+            if len(record['comments']) > 2:
+                sn_code = record['comments'][2][4:].replace(',', ';')
+                report = " ".join(snomed_dict.get(code, code) for code in sn_code.split(';'))
+            else:
+                sn_code = ''
+                report = ''
+            codes.append(sn_code)
+            reports.append(report)
+            ages.append(record['comments'][0][5:])
+            sexes.append(record['comments'][1][5:])
+            paths.append(full_path.split(os.path.join(data_dir))[1])
+        except Exception as e:
+            print(f"Error reading {full_path}: {e}")
+            continue    
     diagnostic_df = pd.DataFrame()
     diagnostic_df["filename"] = paths
     diagnostic_df["age"] = ages
