@@ -6,7 +6,11 @@ import os
 from tqdm import tqdm
 
 def signal_analyse(path, sampling_rate=500):
-    signal = wfdb.rdsamp(path)[0].T[1,:]
+    try:
+        signal = wfdb.rdsamp(path)[0].T[1,:]
+    except FileNotFoundError:
+        print(f"File not found: {path}.hea")
+        return [None] * 8
     signal[np.isnan(signal)] = 0
     signal[np.isinf(signal)] = 0
     try:
