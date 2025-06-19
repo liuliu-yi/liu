@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from scipy.signal import resample
 import wfdb
+import ast
 def handler_data():
     """
         before running this data preparing code,
@@ -16,6 +17,15 @@ def handler_data():
         and put it in data_path
         """
     """"""
+
+
+    def str_to_list(x):
+        if isinstance(x, list):
+            return x
+        try:
+            return ast.literal_eval(x)
+        except:
+            return [x]
     #信号归一化
     def zscore_norm(ecg_signal):
             # (channels, timesteps)
@@ -94,53 +104,53 @@ def handler_data():
 
     # 新建 report_wave 列，拼接报告和波形特征
     def append_wave_to_report(row):
-        return str(row['report']) + get_wave_info(row)
+        return str(row['report']) + "." + get_wave_info(row)
 
     data_file['report_wave'] = data_file.apply(append_wave_to_report, axis=1)
     
-   
+    data_file['Snomed_CT_list'] = data_file['Snomed_CT_list'].apply(str_to_list)
   
     # Snomed_CT批量映射为多标签全称
     def snomed_to_names(code_list):
-        return [snomed_map.get(code, code) for code in code_list]
+        return [snomed_map.get(str(code), str(code)) for code in code_list]
     
     data_file['label']= data_file['Snomed_CT_list'].apply(snomed_to_names)
 
     #在划分之前保存一下 已经预处理好的完整表 方便后续统计标签
-    data_file.to_csv(f'./processed_new_diagnostics.csv')
+    data_file.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/processed_new_diagnostics.csv')
 
+    data_file=pd.read_csv('/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/processed_new_diagnostics.csv')
+    # 按8:1:1随机划分训练、验证、测试集
+    # 保证sig, label, report顺序一致
+    X_temp, y_test = train_test_split(
+        data_file, test_size=0.1, random_state=42, stratify=None
+    )
+    val_ratio = 0.1 / 0.9
+    y_train, y_val = train_test_split(
+        X_temp, test_size=val_ratio, random_state=42, stratify=None
+    )
 
-    # # 按8:1:1随机划分训练、验证、测试集
-    # # 保证sig, label, report顺序一致
-    # X_temp, y_test = train_test_split(
-    #     data_file, test_size=0.1, random_state=42, stratify=None
-    # )
-    # val_ratio = 0.1 / 0.9
-    # y_train, y_val = train_test_split(
-    #     X_temp, test_size=val_ratio, random_state=42, stratify=None
-    # )
+    # 保存
+    #信号路径
+    root_dir = '/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/CSD/'
+    #拼接为完整路径
+    path_train = root_dir + y_train['filename'].astype(str)
+    path_val = root_dir + y_val['filename'].astype(str)
+    path_test = root_dir + y_test['filename'].astype(str)
 
-    # # 保存
-    # #信号路径
-    # root_dir = '/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/CSD/'
-    # #拼接为完整路径
-    # path_train = root_dir + y_train['filename'].astype(str)
-    # path_val = root_dir + y_val['filename'].astype(str)
-    # path_test = root_dir + y_test['filename'].astype(str)
+    path_train.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/ecg_train.csv',index=False)
+    path_val.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/ecg_val.csv',index=False)
+    path_test.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/ecg_test.csv',index=False)
 
-    # path_train.to_csv(f'./data/ecg_train.csv')
-    # path_val.to_csv(f'./data/ecg_val.csv')
-    # path_test.to_csv(f'./data/ecg_test.csv')
-
-    # #标签
-    # # 将每一行的list转为字符串再保存
-    # y_train.astype(str).reset_index(drop=True).to_csv(f'./data/label_train.csv') #默认保留索引与表头
-    # y_val.astype(str).reset_index(drop=True).to_csv(f'./data/label_val.csv')
-    # y_test.astype(str).reset_index(drop=True).to_csv(f'./data/label_test.csv')
-    # #报告
-    # report_train.reset_index(drop=True).to_csv(f'./data/report_train.csv')
-    # report_val.reset_index(drop=True).to_csv(f'./data/report_val.csv')
-    # report_test.reset_index(drop=True).to_csv(f'./data/report_test.csv')
+    #标签
+    # 将每一行的list转为字符串再保存
+    y_train.astype(str).to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/label_train.csv',index=False) #默认保留索引与表头
+    y_val.astype(str).to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/label_val.csv',index=False)
+    y_test.astype(str).to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/label_test.csv',index=False)
+    #报告
+    report_train.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/report_train.csv',index=False)
+    report_val.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/report_val.csv',index=False)
+    report_test.to_csv(f'/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/data/report_test.csv',index=False)
 
 
    
