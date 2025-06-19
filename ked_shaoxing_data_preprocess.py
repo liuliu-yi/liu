@@ -108,7 +108,9 @@ def handler_data():
 
     data_file['report_wave'] = data_file.apply(append_wave_to_report, axis=1)
     
-    data_file['Snomed_CT_list'] = data_file['Snomed_CT_list'].apply(str_to_list)
+    data_file['Snomed_CT_list'] = data_file['Snomed_CT_list'].apply(
+    lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith('[') else x
+    )
   
     # Snomed_CT批量映射为多标签全称
     def snomed_to_names(code_list):
