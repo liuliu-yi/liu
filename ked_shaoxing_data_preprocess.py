@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer
 import pandas as pd
 import numpy as np
 from scipy.signal import resample
-
+import wfdb
 def handler_data():
     """
         before running this data preparing code,
@@ -46,7 +46,7 @@ def handler_data():
             record = wfdb.rdrecord(file_path)
             sig = record.p_signal  # shape: (length, leads)
             #信号自归一化
-            sig = zscore_norm(sig)
+            #sig = zscore_norm(sig)
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
             error_files.append(file_path)
@@ -98,39 +98,49 @@ def handler_data():
 
     data_file['report_wave'] = data_file.apply(append_wave_to_report, axis=1)
     
-    #得标签与报告
-    raw_label= data_file['Snomed_CT_list']
-    report = data_file['report_wave']
+   
   
     # Snomed_CT批量映射为多标签全称
     def snomed_to_names(code_list):
         return [snomed_map.get(code, code) for code in code_list]
     
-    label= raw_label.apply(snomed_to_names)
+    data_file['label']= data_file['Snomed_CT_list'].apply(snomed_to_names)
 
-    # 按8:1:1随机划分训练、验证、测试集
-    # 保证sig, label, report顺序一致
-    X_temp, X_test, y_temp, y_test, report_temp, report_test = train_test_split(
-        sig, label, report, test_size=0.1, random_state=42, stratify=None
-    )
-    val_ratio = 0.1 / 0.9
-    X_train, X_val, y_train, y_val, report_train, report_val = train_test_split(
-        X_temp, y_temp, report_temp, test_size=val_ratio, random_state=42, stratify=None
-    )
+    #在划分之前保存一下 已经预处理好的完整表 方便后续统计标签
+    data_file.to_csv(f'./processed_new_diagnostics.csv')
 
-    # 保存
-    #信号
-    np.save(f'./data/signal_train.npy', X_train)
-    np.save(f'./data/signal_val.npy', X_val)
-    np.save(f'./data/signal_test.npy', X_test)
-    #标签
-    y_train.reset_index(drop=True).to_json(f'./data/label_train.json', orient="records", force_ascii=False)
-    y_val.reset_index(drop=True).to_json(f'./data/label_val.json', orient="records", force_ascii=False)
-    y_test.reset_index(drop=True).to_json(f'./data/label_test.json', orient="records", force_ascii=False)
-    #报告
-    report_train.reset_index(drop=True).to_csv(f'./data/report_train.csv', index=False)
-    report_val.reset_index(drop=True).to_csv(f'./data/report_val.csv', index=False)
-    report_test.reset_index(drop=True).to_csv(f'./data/report_test.csv', index=False)
+
+    # # 按8:1:1随机划分训练、验证、测试集
+    # # 保证sig, label, report顺序一致
+    # X_temp, y_test = train_test_split(
+    #     data_file, test_size=0.1, random_state=42, stratify=None
+    # )
+    # val_ratio = 0.1 / 0.9
+    # y_train, y_val = train_test_split(
+    #     X_temp, test_size=val_ratio, random_state=42, stratify=None
+    # )
+
+    # # 保存
+    # #信号路径
+    # root_dir = '/data_C/sdb1/lyi/ked/ECGFM-KED-main/dataset/shaoxing/CSD/'
+    # #拼接为完整路径
+    # path_train = root_dir + y_train['filename'].astype(str)
+    # path_val = root_dir + y_val['filename'].astype(str)
+    # path_test = root_dir + y_test['filename'].astype(str)
+
+    # path_train.to_csv(f'./data/ecg_train.csv')
+    # path_val.to_csv(f'./data/ecg_val.csv')
+    # path_test.to_csv(f'./data/ecg_test.csv')
+
+    # #标签
+    # # 将每一行的list转为字符串再保存
+    # y_train.astype(str).reset_index(drop=True).to_csv(f'./data/label_train.csv') #默认保留索引与表头
+    # y_val.astype(str).reset_index(drop=True).to_csv(f'./data/label_val.csv')
+    # y_test.astype(str).reset_index(drop=True).to_csv(f'./data/label_test.csv')
+    # #报告
+    # report_train.reset_index(drop=True).to_csv(f'./data/report_train.csv')
+    # report_val.reset_index(drop=True).to_csv(f'./data/report_val.csv')
+    # report_test.reset_index(drop=True).to_csv(f'./data/report_test.csv')
 
 
    
