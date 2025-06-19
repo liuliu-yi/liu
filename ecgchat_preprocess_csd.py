@@ -10,7 +10,6 @@ import wfdb
 def prepare(args):
     data_dir = args.data_dir
     df = pd.read_csv(os.path.join(data_dir, "/data_C/sdb1/lyi/ECG-Chat-master/data/champan-shaoxing/ConditionNames_SNOMED-CT.csv"))
-    #建立SNOMED-CT编码到疾病全名的映射字典
     snomed_dict = {}
     for i in range(len(df)):
         snomed_dict[str(df["Snomed_CT"].values[i])] = df['Full Name'].values[i]
@@ -67,35 +66,21 @@ def prepare(args):
     codes = []
     nc = []
     file_list = []
-    
-    #获取每一条心电信号的完整路径
     for f in os.walk(os.path.join(data_dir, "WFDBRecords")):
         if(len(f[2]) < 0):
             continue
         for file in f[2]:
             if "mat" in file:
                 file_list.append(os.path.join(f[0], file))
-    #对每个心电信号文件，读取其头文件（.hea），从注释中解析出SNOMED-CT代码
+
     print("Start extracting labels from .hea files...")
-    for file_path in tqdm(file_list):
-        full_path = file_path.replace(".mat", "")
-        
-        try:
-            record = wfdb.rdsamp(full_path)[1]
-            if len(record['comments']) > 2:
-                sn_code = record['comments'][2][4:].replace(',', ';')
-                report = " ".join(snomed_dict.get(code, code) for code in sn_code.split(';'))
-            else:
-                sn_code = ''
-                report = ''
-        except Exception as e:
-            print(f"Error reading {full_path}: {e}")
-            continue
-        #根据snomed_dict将其映射为英文描述，拼成一条诊断报告
-        
+    for file_name in tqdm(file_list):
+        full_path = os.path.join(f[0], file_name).replace(".mat", "")
+        record = wfdb.rdsamp(full_path)[1]
+        sn_code = record['comments'][2][4:].replace(',', ';')
+        report = " ".join(snomed_dict[code] for code in sn_code.split(';'))
         codes.append(sn_code)
         reports.append(report)
-        #从注释中提取年龄、性别等信息，用于后续分析
         ages.append(record['comments'][0][5:])
         sexes.append(record['comments'][1][5:])
         paths.append(full_path.split(os.path.join(data_dir))[1])
@@ -106,7 +91,7 @@ def prepare(args):
     diagnostic_df["report"] = reports
     diagnostic_df["Snomed_CT"] = codes
     diagnostic_df["strat_fold"] = np.array(range(0, len(paths))) % 10
-    #计算波形信息。
+    
     print("Start calculating waveform data...")
     data_dict = calculate_waveforms(data_dir, paths)
 
