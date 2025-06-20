@@ -97,7 +97,7 @@ def prepare(args):
     diagnostic_df["age"] = ages
     diagnostic_df["sex"] = sexes
     diagnostic_df["report"] = reports
-    diagnostic_df["Snomed_CT"] = codes
+    dprocess_wave.pyiagnostic_df["Snomed_CT"] = codes
     diagnostic_df["strat_fold"] = np.array(range(0, len(paths))) % 10
     
     print("Start calculating waveform data...")
